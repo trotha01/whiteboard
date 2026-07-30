@@ -1,8 +1,9 @@
 # Whiteboard
 
 An infinite-canvas whiteboard: pen and eraser, six colours, three stroke sizes,
-undo/redo, pan and zoom (wheel, pinch, or keyboard). React + TypeScript + Tailwind,
-built with Vite and deployed to Netlify.
+undo/redo, pan and zoom (wheel, pinch, or keyboard). Drawings autosave to Supabase
+and are restored on load. React + TypeScript + Tailwind, built with Vite and
+deployed to Netlify.
 
 Ported from the original single-file `whiteboard.html`, which is kept for reference.
 
@@ -10,7 +11,8 @@ Ported from the original single-file `whiteboard.html`, which is kept for refere
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
+cp .env.example .env.local   # optional; without it the board runs in memory
+npm run dev                  # http://localhost:5173
 ```
 
 | Script              | Purpose                            |
@@ -35,6 +37,63 @@ Requires Node `^20.19` or `>=22.12` (Vite 8).
 
 Scroll to pan, `Ctrl`/`⌘` + scroll (or pinch) to zoom, middle-drag to pan.
 Clearing the board takes two clicks — the first arms the button for ~2.6s.
+
+## Backend (Supabase)
+
+### Setup
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. Run `supabase/migrations/0001_boards.sql` against it — either paste it into the
+   SQL Editor, or `supabase db push` if you use the CLI. It creates the `boards`
+   table, its RLS policies, and seeds the default board row.
+3. Copy `.env.example` to `.env.local` and fill in the project URL and anon key
+   from _Project Settings → API_.
+4. For Netlify, set the same two variables under _Site configuration → Environment
+   variables_. They are inlined at build time, so redeploy after changing them.
+
+| Variable                 | Required | Purpose                                     |
+| ------------------------ | -------- | ------------------------------------------- |
+| `VITE_SUPABASE_URL`      | yes      | Project URL                                 |
+| `VITE_SUPABASE_ANON_KEY` | yes      | Anon/publishable key                        |
+| `VITE_BOARD_ID`          | no       | Point a deploy at a different board row      |
+
+Both keys ship in the browser bundle; that is expected for an anon key, and RLS is
+what actually constrains access.
+
+### How saving works
+
+One row holds the whole board: `strokes` is a `jsonb` array of world-space
+polylines. Undo, redo and clear all rewrite the list as a unit and the payloads are
+small, so the client upserts the entire document rather than tracking per-stroke
+rows — writes stay atomic and there is no reconciliation to get wrong.
+
+`useBoardSync` loads that row once on mount and then autosaves on a 700ms debounce
+after every committed change (stroke finished, undo, redo, clear), flushing early if
+the tab is hidden. A failed write retries up to three times.
+
+Two invariants matter:
+
+- **Saving is disabled until the load resolves.** A slow network or a failed read
+  can therefore never overwrite a stored board with a blank one. If the load fails,
+  the session stays read-only and the indicator reads _Not saved_; reload to retry.
+- **Strokes drawn while the load is in flight are kept.** Restored strokes are
+  prepended beneath them rather than replacing them.
+
+Rows are parsed defensively (`parseStrokes`): anything that does not match the
+current `Stroke` shape is dropped so a stale or hand-edited row cannot break a
+frame. The viewport is deliberately *not* persisted — pan and zoom stay per-device.
+
+The top-right indicator reports the state: _Loading_, _Saving_, _Saved_,
+_Not saved_, or _Local only_ when no database is configured.
+
+### Limitations
+
+- **No authentication.** Everyone shares one public board, and RLS grants the anon
+  role read and write on it. To make boards per-user, add an `owner_id uuid` column
+  and swap the policies for `auth.uid() = owner_id` — the SQL notes where.
+- **Last write wins.** Two people drawing at once will clobber each other, because
+  each saves the full document. Concurrent editing would need Realtime plus either
+  per-stroke rows or CRDT-style merging.
 
 ## Deploying to Netlify
 
@@ -61,14 +120,21 @@ src/
   main.tsx                  React entry
   App.tsx                   Canvas layers + toolbar
   index.css                 Tailwind theme tokens and custom utilities
+  env.d.ts                  Typed VITE_* environment variables
+  lib/
+    supabase.ts             Client (null when unconfigured) and board id
   whiteboard/
     types.ts                Tool, Stroke, Viewport, Point
-    constants.ts            Palette, sizes, zoom and grid limits
+    constants.ts            Palette, sizes, zoom/grid limits, autosave timing
     render.ts               Pure canvas painting + coordinate transforms
+    persistence.ts          Board load/save queries and row parsing
+    useBoardSync.ts         Initial load + debounced autosave
     useWhiteboard.ts        Input handling, view and history state
   components/
     Toolbar.tsx  ColorPicker.tsx  SizePicker.tsx  ClearButton.tsx
-    ToolbarButton.tsx  BrushCursor.tsx  Hint.tsx  icons.tsx
+    ToolbarButton.tsx  BrushCursor.tsx  Hint.tsx  SaveIndicator.tsx  icons.tsx
+supabase/
+  migrations/0001_boards.sql  Table, RLS policies, seed row
 ```
 
 Two stacked canvases: a dot grid underneath and an ink layer above, so the eraser

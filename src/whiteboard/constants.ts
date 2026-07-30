@@ -29,3 +29,8 @@ export const PEN_CURSOR_FILL = 'rgba(0,0,0,0.05)';
 
 /** How long the clear button stays armed waiting for a confirming second click. */
 export const CLEAR_CONFIRM_MS = 2600;
+
+/** Quiet period after the last change before the board is written to Supabase. */
+export const AUTOSAVE_DEBOUNCE_MS = 700;
+export const SAVE_RETRY_MS = 4000;
+export const SAVE_RETRY_ATTEMPTS = 3;

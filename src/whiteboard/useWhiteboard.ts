@@ -13,8 +13,10 @@ import {
   WHEEL_ZOOM_SENSITIVITY,
   ZOOM_STEP,
 } from './constants';
+import type { SaveStatus } from './persistence';
 import { clamp, compositeFor, drawGrid, paintPath, redrawInk, screenToWorld } from './render';
 import type { Point, ScreenPoint, SizeIndex, Stroke, Tool, Viewport } from './types';
+import { useBoardSync } from './useBoardSync';
 
 interface PanStart {
   x: number;
@@ -92,6 +94,7 @@ export interface WhiteboardApi {
   canUndo: boolean;
   canRedo: boolean;
   hasDrawn: boolean;
+  saveStatus: SaveStatus;
   undo: () => void;
   redo: () => void;
   clear: () => void;
@@ -172,6 +175,25 @@ export function useWhiteboard(): WhiteboardApi {
     setHasDrawn(strokes.length > 0);
   }, []);
 
+  const getStrokes = useCallback(() => engineRef.current.strokes, []);
+
+  /**
+   * Strokes restored from the database go underneath anything drawn while the
+   * load was still in flight, matching the order they were committed in.
+   */
+  const applyStrokes = useCallback(
+    (restored: Stroke[]) => {
+      const engine = engineRef.current;
+      engine.strokes = [...restored, ...engine.strokes];
+      engine.undone = [];
+      syncHistory();
+      scheduleRedraw();
+    },
+    [scheduleRedraw, syncHistory],
+  );
+
+  const { status: saveStatus, markDirty } = useBoardSync({ getStrokes, applyStrokes });
+
   const updateCursor = useCallback(() => {
     const engine = engineRef.current;
     const panMode = toolRef.current === 'pan' || engine.spacePressed || engine.isPanning;
@@ -210,7 +232,8 @@ export function useWhiteboard(): WhiteboardApi {
     engine.undone.push(last);
     syncHistory();
     scheduleRedraw();
-  }, [scheduleRedraw, syncHistory]);
+    markDirty();
+  }, [markDirty, scheduleRedraw, syncHistory]);
 
   const redo = useCallback(() => {
     const engine = engineRef.current;
@@ -219,7 +242,8 @@ export function useWhiteboard(): WhiteboardApi {
     engine.strokes.push(restored);
     syncHistory();
     scheduleRedraw();
-  }, [scheduleRedraw, syncHistory]);
+    markDirty();
+  }, [markDirty, scheduleRedraw, syncHistory]);
 
   const clear = useCallback(() => {
     const engine = engineRef.current;
@@ -227,7 +251,8 @@ export function useWhiteboard(): WhiteboardApi {
     engine.undone = [];
     syncHistory();
     scheduleRedraw();
-  }, [scheduleRedraw, syncHistory]);
+    markDirty();
+  }, [markDirty, scheduleRedraw, syncHistory]);
 
   /** Zoom about a screen anchor, keeping the world point under it fixed. */
   const zoomAt = useCallback(
@@ -325,8 +350,12 @@ export function useWhiteboard(): WhiteboardApi {
     };
 
     const endStroke = () => {
+      // The stroke was pushed onto `strokes` at the start, so finishing one —
+      // even an abandoned pinch — is a committed change worth persisting.
+      const committed = engine.current !== null;
       engine.current = null;
       engine.lastScreen = null;
+      if (committed) markDirty();
     };
 
     const onResize = () => resize();
@@ -523,6 +552,7 @@ export function useWhiteboard(): WhiteboardApi {
     };
   }, [
     hideBrushCursor,
+    markDirty,
     redo,
     resetView,
     resize,
@@ -553,6 +583,7 @@ export function useWhiteboard(): WhiteboardApi {
     canUndo,
     canRedo,
     hasDrawn,
+    saveStatus,
     undo,
     redo,
     clear,

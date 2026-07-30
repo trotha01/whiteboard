@@ -1,5 +1,6 @@
 import { BrushCursor } from './components/BrushCursor';
 import { Hint } from './components/Hint';
+import { SaveIndicator } from './components/SaveIndicator';
 import { Toolbar } from './components/Toolbar';
 import { useWhiteboard } from './whiteboard/useWhiteboard';
 
@@ -17,6 +18,7 @@ export function App() {
         aria-label="Whiteboard drawing surface"
       />
       <Hint hidden={board.hasDrawn} />
+      <SaveIndicator status={board.saveStatus} />
       <BrushCursor ref={board.brushCursorRef} />
       <Toolbar {...board} />
     </>

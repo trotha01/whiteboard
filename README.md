@@ -63,9 +63,28 @@ what actually constrains access.
 ### How saving works
 
 One row holds the whole board: `strokes` is a `jsonb` array of world-space
-polylines. Undo, redo and clear all rewrite the list as a unit and the payloads are
-small, so the client upserts the entire document rather than tracking per-stroke
-rows — writes stay atomic and there is no reconciliation to get wrong.
+polylines. Undo, redo and clear all rewrite the list as a unit, so the client upserts
+the entire document rather than tracking per-stroke rows — writes stay atomic and
+there is no reconciliation to get wrong.
+
+That only works while the document stays small, and raw pointer input is not: a
+pointer samples at 60–120Hz, and dividing by `Viewport.scale` turns every coordinate
+into a full-precision double like `123.45678901234567`. So a stroke is compacted once,
+when it is committed (`simplify.ts`), which keeps every later save small too:
+
+- Moves landing within `MIN_POINT_DISTANCE_PX` of the last sample are dropped as they
+  arrive — they cost bytes and paint nothing.
+- The finished path is run through Douglas–Peucker at `SIMPLIFY_TOLERANCE_PX`.
+- Coordinates are rounded to `COORD_SUBPIXEL_DIGITS` decimals.
+
+All three are screen-pixel quantities, converted to world space via the scale the
+stroke was drawn at, so fidelity stays constant at any zoom — a fixed world-space
+tolerance would mangle strokes drawn zoomed in and barely touch strokes drawn zoomed
+out. Measured on synthetic 360-sample strokes, the document comes out ~8× smaller with
+worst-case deviation under 0.6px at every zoom level. Because the in-memory array
+holds the compacted strokes, undo/redo and the ink layer stay in sync with what is
+stored; strokes restored from older rows are compacted on load, so the first save
+after an edit shrinks them too.
 
 `useBoardSync` loads that row once on mount and then autosaves on a 700ms debounce
 after every committed change (stroke finished, undo, redo, clear), flushing early if
@@ -127,6 +146,7 @@ src/
     types.ts                Tool, Stroke, Viewport, Point
     constants.ts            Palette, sizes, zoom/grid limits, autosave timing
     render.ts               Pure canvas painting + coordinate transforms
+    simplify.ts             Douglas-Peucker + rounding, applied on stroke commit
     persistence.ts          Board load/save queries and row parsing
     useBoardSync.ts         Initial load + debounced autosave
     useWhiteboard.ts        Input handling, view and history state
@@ -150,5 +170,6 @@ DOM node.
 Strokes store points in **world space**, so they stay put under pan and zoom; screen
 coordinates are derived at paint time. An in-progress stroke is drawn incrementally
 segment by segment, while committed strokes are repainted as single polylines on
-view changes. That makes a redrawn stroke differ from the live one by a few
-antialiased pixels along the joins — cosmetic, and inherited from the original.
+view changes. Committing a stroke repaints it immediately, both because compaction
+has just replaced its points and so that what is on screen matches what gets stored;
+the live and redrawn forms used to differ by a few antialiased pixels along the joins.

@@ -7,6 +7,7 @@ import {
   ERASER_SIZES,
   MAX_SCALE,
   MIN_BRUSH_CURSOR_PX,
+  MIN_POINT_DISTANCE_PX,
   MIN_SCALE,
   PEN_CURSOR_FILL,
   PEN_SIZES,
@@ -15,6 +16,7 @@ import {
 } from './constants';
 import type { SaveStatus } from './persistence';
 import { clamp, compositeFor, drawGrid, paintPath, redrawInk, screenToWorld } from './render';
+import { compactStroke } from './simplify';
 import type { Point, ScreenPoint, SizeIndex, Stroke, Tool, Viewport } from './types';
 import { useBoardSync } from './useBoardSync';
 
@@ -180,11 +182,16 @@ export function useWhiteboard(): WhiteboardApi {
   /**
    * Strokes restored from the database go underneath anything drawn while the
    * load was still in flight, matching the order they were committed in.
+   *
+   * Rows written before strokes were compacted on commit still hold raw pointer
+   * samples, so fold them down here at 100% zoom; the next save then shrinks the
+   * stored document instead of preserving it forever.
    */
   const applyStrokes = useCallback(
     (restored: Stroke[]) => {
       const engine = engineRef.current;
-      engine.strokes = [...restored, ...engine.strokes];
+      const compacted = restored.map((stroke) => compactStroke(stroke, 1));
+      engine.strokes = [...compacted, ...engine.strokes];
       engine.undone = [];
       syncHistory();
       scheduleRedraw();
@@ -344,6 +351,11 @@ export function useWhiteboard(): WhiteboardApi {
 
     const extendStroke = (clientX: number, clientY: number) => {
       if (!engine.current || !engine.lastScreen) return;
+      // A sub-pixel move stores a point that paints nothing. Leave `lastScreen`
+      // alone when rejecting one, so a slow drag still accumulates toward the
+      // next accepted sample instead of dropping points indefinitely.
+      const [lastX, lastY] = engine.lastScreen;
+      if (Math.hypot(clientX - lastX, clientY - lastY) < MIN_POINT_DISTANCE_PX) return;
       engine.current.points.push(screenToWorld(clientX, clientY, engine.view));
       paintSegment([engine.lastScreen, [clientX, clientY]]);
       engine.lastScreen = [clientX, clientY];
@@ -352,10 +364,20 @@ export function useWhiteboard(): WhiteboardApi {
     const endStroke = () => {
       // The stroke was pushed onto `strokes` at the start, so finishing one —
       // even an abandoned pinch — is a committed change worth persisting.
-      const committed = engine.current !== null;
+      const committed = engine.current;
       engine.current = null;
       engine.lastScreen = null;
-      if (committed) markDirty();
+      if (!committed) return;
+
+      // Compact once, here: undo, redo and every later save then inherit the
+      // smaller path for free. The live stroke was painted segment by segment
+      // from the raw samples, so repaint to put on screen exactly what will be
+      // stored — `scheduleRedraw` coalesces it into a single frame.
+      const index = engine.strokes.indexOf(committed);
+      if (index !== -1) engine.strokes[index] = compactStroke(committed, engine.view.scale);
+      scheduleRedraw();
+
+      markDirty();
     };
 
     const onResize = () => resize();

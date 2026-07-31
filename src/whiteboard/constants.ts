@@ -34,3 +34,14 @@ export const CLEAR_CONFIRM_MS = 2600;
 export const AUTOSAVE_DEBOUNCE_MS = 700;
 export const SAVE_RETRY_MS = 4000;
 export const SAVE_RETRY_ATTEMPTS = 3;
+
+// How aggressively a finished stroke is compacted before it is stored. All three
+// are in screen pixels at the zoom the stroke was drawn at, so they trade board
+// size against fidelity in units you can actually see.
+
+/** Pointer moves closer than this to the last sample add bytes but no ink. */
+export const MIN_POINT_DISTANCE_PX = 1;
+/** Douglas-Peucker tolerance; well under a pixel, so the path looks unchanged. */
+export const SIMPLIFY_TOLERANCE_PX = 0.6;
+/** Coordinate decimals at 100% zoom — 2 keeps 0.01px, versus ~17 raw digits. */
+export const COORD_SUBPIXEL_DIGITS = 2;

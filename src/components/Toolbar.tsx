@@ -2,18 +2,42 @@ import type { Tool } from '../whiteboard/types';
 import type { WhiteboardApi } from '../whiteboard/useWhiteboard';
 import { ClearButton } from './ClearButton';
 import { ColorPicker } from './ColorPicker';
-import { EraserIcon, MinusIcon, PanIcon, PenIcon, PlusIcon, RedoIcon, UndoIcon } from './icons';
+import {
+  EraserIcon,
+  ImageIcon,
+  MinusIcon,
+  PanIcon,
+  PenIcon,
+  PlusIcon,
+  RedoIcon,
+  UndoIcon,
+} from './icons';
 import { SizePicker } from './SizePicker';
 import { ToolbarButton } from './ToolbarButton';
 
 const TOOLBAR_CLASS = [
-  'fixed bottom-5 left-1/2 z-10 -translate-x-1/2',
+  'fixed bottom-5 left-1/2 z-10',
+  // `--toolbar-shift` slides the bar clear of the open drawer. Folded into the
+  // centring translate rather than applied as a second utility, so the two can
+  // never fight over which one wins.
+  'translate-x-[calc(-50%+var(--toolbar-shift))] transition-transform duration-300',
   'flex max-w-[calc(100vw-16px)] items-center gap-[5px]',
   'overflow-x-auto overflow-y-hidden no-scrollbar',
   'rounded-full border border-hairline bg-panel px-[9px] py-[7px]',
   'shadow-panel backdrop-blur-[16px] backdrop-saturate-150',
   'max-[520px]:bottom-3 max-[520px]:gap-[3px] max-[520px]:px-[7px] max-[520px]:py-1.5',
+  '[--toolbar-shift:0px]',
 ].join(' ');
+
+/**
+ * Half the drawer's width, so an open drawer leaves the toolbar centred in the
+ * space beside it instead of running underneath it — which would bury the very
+ * button that closes it. Kept in step with `ImageDrawer`'s `w-[380px]` by hand:
+ * Tailwind only generates classes it can see as literals.
+ *
+ * Below 520px the drawer covers the full width, so there is nothing to shift into.
+ */
+const TOOLBAR_SHIFTED_CLASS = '[--toolbar-shift:190px] max-[520px]:[--toolbar-shift:0px]';
 
 const TOOLS: ReadonlyArray<{ tool: Tool; title: string; icon: React.ReactNode }> = [
   { tool: 'pen', title: 'Pen (P)', icon: <PenIcon /> },
@@ -25,7 +49,15 @@ function Divider() {
   return <div className="mx-[3px] h-6 w-px flex-none bg-hairline max-[520px]:mx-0.5" />;
 }
 
+interface ToolbarProps extends WhiteboardApi {
+  /** Whether the image drawer is showing, so the button reads as a toggle. */
+  drawerOpen: boolean;
+  onToggleDrawer: () => void;
+}
+
 export function Toolbar({
+  drawerOpen,
+  onToggleDrawer,
   toolbarRef,
   tool,
   setTool,
@@ -42,16 +74,29 @@ export function Toolbar({
   zoomIn,
   zoomOut,
   resetView,
-}: WhiteboardApi) {
+}: ToolbarProps) {
   return (
     <div
       ref={toolbarRef}
-      className={TOOLBAR_CLASS}
+      data-chrome
+      className={`${TOOLBAR_CLASS}${drawerOpen ? ` ${TOOLBAR_SHIFTED_CLASS}` : ''}`}
       role="toolbar"
       aria-label="Whiteboard tools"
       // Keep toolbar presses from reaching the canvas beneath it.
       onPointerDown={(e) => e.stopPropagation()}
     >
+      {/* First, mirroring the drawer it opens on the left edge of the screen. */}
+      <ToolbarButton
+        title="Images (drag one onto the board)"
+        aria-label="Images"
+        aria-expanded={drawerOpen}
+        active={drawerOpen}
+        onClick={onToggleDrawer}
+      >
+        <ImageIcon />
+      </ToolbarButton>
+
+      <Divider />
       <div className="flex flex-none items-center gap-1" role="group" aria-label="Tool">
         {TOOLS.map(({ tool: name, title, icon }) => (
           <ToolbarButton

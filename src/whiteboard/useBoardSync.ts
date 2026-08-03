@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { AUTOSAVE_DEBOUNCE_MS, SAVE_RETRY_ATTEMPTS, SAVE_RETRY_MS } from './constants';
 import { loadBoard, saveBoard, type SaveStatus } from './persistence';
-import type { Stroke } from './types';
+import type { BoardDocument } from './types';
 
 interface BoardSyncOptions {
-  /** Reads the strokes to persist. Called at save time, never at queue time. */
-  getStrokes: () => readonly Stroke[];
-  /** Hands restored strokes to the board once the initial load lands. */
-  applyStrokes: (strokes: Stroke[]) => void;
+  /** Reads the board to persist. Called at save time, never at queue time. */
+  getDocument: () => BoardDocument;
+  /** Hands the restored board to the canvas once the initial load lands. */
+  applyDocument: (document: BoardDocument) => void;
 }
 
 export interface BoardSync {
@@ -18,11 +18,11 @@ export interface BoardSync {
 }
 
 /**
- * Loads the board once on mount, then autosaves the whole stroke list on a
+ * Loads the board once on mount, then autosaves the whole document on a
  * debounce. Saves stay disabled until the load resolves, so a slow network or a
  * failed read can never overwrite the stored board with a blank one.
  */
-export function useBoardSync({ getStrokes, applyStrokes }: BoardSyncOptions): BoardSync {
+export function useBoardSync({ getDocument, applyDocument }: BoardSyncOptions): BoardSync {
   const [status, setStatus] = useState<SaveStatus>(
     isSupabaseConfigured ? 'loading' : 'offline',
   );
@@ -36,10 +36,10 @@ export function useBoardSync({ getStrokes, applyStrokes }: BoardSyncOptions): Bo
 
   // The load effect runs once; reading callbacks through refs keeps it that way
   // even though the caller passes fresh closures on every render.
-  const getStrokesRef = useRef(getStrokes);
-  const applyStrokesRef = useRef(applyStrokes);
-  getStrokesRef.current = getStrokes;
-  applyStrokesRef.current = applyStrokes;
+  const getDocumentRef = useRef(getDocument);
+  const applyDocumentRef = useRef(applyDocument);
+  getDocumentRef.current = getDocument;
+  applyDocumentRef.current = applyDocument;
 
   const flush = useCallback(async () => {
     if (!isSupabaseConfigured || !loadedRef.current) return;
@@ -50,11 +50,13 @@ export function useBoardSync({ getStrokes, applyStrokes }: BoardSyncOptions): Bo
     dirtyRef.current = false;
     setStatus('saving');
 
-    // Snapshot before awaiting: the live array keeps mutating as the user draws.
-    const snapshot = getStrokesRef.current().map((stroke) => ({
-      ...stroke,
-      points: [...stroke.points],
-    }));
+    // Snapshot before awaiting: the live arrays keep mutating as the user draws.
+    const live = getDocumentRef.current();
+    const snapshot = {
+      strokes: live.strokes.map((stroke) => ({ ...stroke, points: [...stroke.points] })),
+      // Images are flat records, so copying the array is deep enough.
+      images: [...live.images],
+    };
 
     try {
       await saveBoard(snapshot);
@@ -90,9 +92,11 @@ export function useBoardSync({ getStrokes, applyStrokes }: BoardSyncOptions): Bo
     let cancelled = false;
 
     loadBoard()
-      .then((strokes) => {
+      .then((document) => {
         if (cancelled) return;
-        if (strokes?.length) applyStrokesRef.current(strokes);
+        if (document && (document.strokes.length || document.images.length)) {
+          applyDocumentRef.current(document);
+        }
         loadedRef.current = true;
         // Anything drawn while the load was in flight still needs writing.
         setStatus(dirtyRef.current ? 'saving' : 'saved');

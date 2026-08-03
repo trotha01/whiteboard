@@ -30,6 +30,20 @@ export const PEN_CURSOR_FILL = 'rgba(0,0,0,0.05)';
 /** How long the clear button stays armed waiting for a confirming second click. */
 export const CLEAR_CONFIRM_MS = 2600;
 
+/** Asset library embedded in the image drawer. Cross-origin, so read-only to us. */
+export const ASSETS_URL = 'https://assets.simka.cat';
+
+
+/** Widest edge a dropped image is scaled to, in world units. The other edge follows
+ *  the source's aspect ratio, so tall images stay tall. */
+export const IMAGE_DROP_WIDTH = 320;
+
+/** Sanity bound on stored dimensions; anything larger is a corrupt or hostile row. */
+export const MAX_IMAGE_DIMENSION = 20000;
+
+/** Give up on a dropped URL that has not decoded by now, rather than hanging the drop. */
+export const IMAGE_LOAD_TIMEOUT_MS = 15000;
+
 /** Quiet period after the last change before the board is written to Supabase. */
 export const AUTOSAVE_DEBOUNCE_MS = 700;
 export const SAVE_RETRY_MS = 4000;

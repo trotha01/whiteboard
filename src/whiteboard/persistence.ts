@@ -1,5 +1,6 @@
 import { BOARD_ID, supabase } from '../lib/supabase';
-import type { Point, Stroke } from './types';
+import { MAX_IMAGE_DIMENSION } from './constants';
+import type { BoardDocument, BoardImage, Point, Stroke } from './types';
 
 /** What the toolbar shows about the board's relationship to the database. */
 export type SaveStatus = 'offline' | 'loading' | 'saved' | 'saving' | 'error';
@@ -40,35 +41,69 @@ export function parseStrokes(value: unknown): Stroke[] {
   return value.map(parseStroke).filter((stroke): stroke is Stroke => stroke !== null);
 }
 
+function isFiniteSize(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_IMAGE_DIMENSION;
+}
+
+/**
+ * Same defensive contract as `parseStroke`, with one extra job: the board is
+ * world-writable, so a stored `src` is untrusted input that ends up in an
+ * `<img>`. Only absolute `https:` URLs are let through — never `javascript:`,
+ * and never a `blob:`/`data:` URL that would be broken for every other viewer.
+ */
+function parseImage(value: unknown): BoardImage | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { id, src, x, y, width, height } = value as Record<string, unknown>;
+  if (typeof id !== 'string' || !id) return null;
+  if (typeof src !== 'string') return null;
+  if (typeof x !== 'number' || !Number.isFinite(x)) return null;
+  if (typeof y !== 'number' || !Number.isFinite(y)) return null;
+  if (!isFiniteSize(width) || !isFiniteSize(height)) return null;
+
+  try {
+    if (new URL(src).protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
+
+  return { id, src, x, y, width, height };
+}
+
+export function parseImages(value: unknown): BoardImage[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(parseImage).filter((image): image is BoardImage => image !== null);
+}
+
 /**
  * Reads the saved board. Resolves to `null` when there is nothing to restore —
  * no database configured, or no row yet — so callers can start from blank.
  * Rejects on a genuine transport/permission failure, which must not be mistaken
  * for an empty board (saving over it would destroy the drawing).
  */
-export async function loadBoard(): Promise<Stroke[] | null> {
+export async function loadBoard(): Promise<BoardDocument | null> {
   if (!supabase) return null;
 
   const { data, error } = await supabase
     .from(BOARDS_TABLE)
-    .select('strokes')
+    .select('strokes, images')
     .eq('id', BOARD_ID)
     .maybeSingle();
 
   if (error) throw error;
   if (!data) return null;
 
-  return parseStrokes(data.strokes);
+  return { strokes: parseStrokes(data.strokes), images: parseImages(data.images) };
 }
 
 /** Upserts the whole board. Last write wins; see the README on concurrent edits. */
-export async function saveBoard(strokes: readonly Stroke[]): Promise<void> {
+export async function saveBoard(document: BoardDocument): Promise<void> {
   if (!supabase) return;
 
   const { error } = await supabase.from(BOARDS_TABLE).upsert(
     {
       id: BOARD_ID,
-      strokes,
+      strokes: document.strokes,
+      images: document.images,
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'id' },

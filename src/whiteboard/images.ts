@@ -1,88 +1,104 @@
-import { ASSETS_URL, IMAGE_LOAD_TIMEOUT_MS } from './constants';
+import { ASSETS_ORIGIN, IMAGE_LOAD_TIMEOUT_MS } from './constants';
 
 /**
- * Pulling an image URL out of a drag that started in the assets iframe.
+ * Deciding what a drag is offering, and whether the board can keep it.
  *
- * The iframe is cross-origin, so nothing here can inspect it: no DOM access, no
- * click handlers, no injected script. What we do get is the payload the browser
- * itself builds when the user drags an `<img>` out of a frame, which arrives on
- * the parent's `drop` event. The shape of that payload varies by browser and by
- * whether the image was wrapped in a link, so every known form is tried in turn.
+ * The library in the drawer is cross-origin, so nothing here can inspect it: no
+ * DOM access, no click handlers, no injected script. Clicking a photo goes
+ * through `assetPicker.ts` instead, which is an agreement between the two apps.
+ * Dragging still has to go through the browser's own payload — the library sets
+ * `text/uri-list` explicitly for that reason, but a drag from anywhere else
+ * arrives in whatever shape that site happened to produce.
  */
 
-/** Next.js serves optimised images from this path with the original in `?url=`. */
-const NEXT_IMAGE_PATH = '/_next/image';
-
-/** Ask the Next.js optimiser for a size that still looks sharp when zoomed in. */
-const NEXT_IMAGE_WIDTH = '1920';
+/**
+ * Whether a URL may be placed on the board.
+ *
+ * The board is world-writable and its `src` values end up in `<img>` tags for
+ * every future viewer, so this is the one gate that matters: no `javascript:`,
+ * and no `blob:` or `data:` URL that is already dead for everybody else.
+ *
+ * Plain `http:` is tolerated for the asset library itself and nothing else,
+ * which is what lets `npm run dev` talk to a library on localhost. In
+ * production `ASSETS_ORIGIN` is https, so that branch never fires.
+ */
+export function isPlaceableSrc(src: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(src);
+  } catch {
+    return false;
+  }
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:' && url.origin === ASSETS_ORIGIN;
+}
 
 /**
- * Only `https:` survives. A dropped `javascript:` or `data:` URL has no business
- * in a shared board document, and `blob:` URLs are dead on the next reload.
+ * Placeable form of a dragged candidate, or null if it is not one.
+ *
+ * Absolute URLs only, with no base to resolve against. Resolving relative
+ * payloads against the library used to look generous and was in fact two bugs:
+ * a relative `src` in markup dragged from some *other* site would be rewritten
+ * to point at the library, and any dropped text at all — "just some words" —
+ * became a valid-looking candidate that only failed once the network said so.
+ * The library sends absolute URLs deliberately, so nothing is lost.
  */
 function normalise(candidate: string): string | null {
   const trimmed = candidate.trim();
   if (!trimmed) return null;
 
-  let url: URL;
+  let href: string;
   try {
-    // Relative payloads are rare but legal; the drag came from the assets site.
-    url = new URL(trimmed, ASSETS_URL);
+    href = new URL(trimmed).href;
   } catch {
     return null;
   }
 
-  if (url.protocol !== 'https:') return null;
-
-  // `/_next/image?url=…&w=64` is a thumbnail of the real asset. Prefer the
-  // original where it is absolute, and otherwise just ask for a bigger render
-  // than whatever width the gallery happened to lay out with.
-  if (url.pathname === NEXT_IMAGE_PATH) {
-    const inner = url.searchParams.get('url');
-    if (inner?.startsWith('http')) return normalise(inner);
-    url.searchParams.set('w', NEXT_IMAGE_WIDTH);
-  }
-
-  return url.href;
+  return isPlaceableSrc(href) ? href : null;
 }
 
 /** `text/uri-list` is newline-delimited and may carry `#` comment lines. */
-function fromUriList(value: string): string | null {
-  for (const line of value.split(/\r?\n/)) {
-    if (line.startsWith('#')) continue;
-    const url = normalise(line);
-    if (url) return url;
-  }
-  return null;
+function fromUriList(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => !line.startsWith('#'))
+    .map(normalise)
+    .filter((url): url is string => url !== null);
 }
 
 /**
  * Browsers put a fragment of the source markup in `text/html` — usually the
  * `<img>` itself, sometimes wrapped in the `<a>` it lived inside. Parsing it is
- * how we recover the image when `text/uri-list` holds the link target instead.
+ * how the image is recovered when `text/uri-list` holds the link target instead.
  */
-function fromHtml(value: string): string | null {
+function fromHtml(value: string): string[] {
   const doc = new DOMParser().parseFromString(value, 'text/html');
-  for (const img of doc.querySelectorAll('img')) {
+  return [...doc.querySelectorAll('img')]
     // `getAttribute` rather than `.src`: the parsed document has no base URL, so
     // the resolved property would be mangled before `normalise` sees it.
-    const url = normalise(img.getAttribute('src') ?? '');
-    if (url) return url;
-  }
-  return null;
+    .map((img) => normalise(img.getAttribute('src') ?? ''))
+    .filter((url): url is string => url !== null);
 }
 
 /**
- * Best image URL in a drop, or `null` if the drag carried nothing usable —
- * which is what a drag of text, of a `background-image`, or from an OS file
- * manager looks like. Callers should treat `null` as "ignore this drop".
+ * Every URL in a drop that could be the image, best guess first.
+ *
+ * A list rather than one answer because the payload is genuinely ambiguous and
+ * guessing wrong fails silently. A photo wrapped in a link puts the *page* URL
+ * in `text/uri-list` and the real image in `text/html`; a photo the library
+ * itself set up puts the durable URL in `text/uri-list` and a short-lived
+ * thumbnail in `text/html`. Neither field is reliably the right one, so the
+ * caller tries them in turn and keeps the first that actually decodes as an
+ * image. Empty means the drag carried nothing usable — text, a desktop file, a
+ * plain link — and should be ignored.
  */
-export function imageUrlFromDataTransfer(data: DataTransfer): string | null {
-  return (
-    fromUriList(data.getData('text/uri-list')) ??
-    fromHtml(data.getData('text/html')) ??
-    normalise(data.getData('text/plain'))
-  );
+export function imageUrlsFromDataTransfer(data: DataTransfer): string[] {
+  const candidates = [
+    ...fromUriList(data.getData('text/uri-list')),
+    ...fromHtml(data.getData('text/html')),
+    ...fromUriList(data.getData('text/plain')),
+  ];
+  return [...new Set(candidates)];
 }
 
 /**

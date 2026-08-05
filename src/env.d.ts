@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_SUPABASE_ANON_KEY?: string;
   /** Overrides the default board row id. */
   readonly VITE_BOARD_ID?: string;
+  /** Origin of the asset library shown in the image drawer. Defaults to production. */
+  readonly VITE_ASSETS_URL?: string;
 }
 
 interface ImportMeta {

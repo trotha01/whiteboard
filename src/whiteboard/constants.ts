@@ -30,13 +30,26 @@ export const PEN_CURSOR_FILL = 'rgba(0,0,0,0.05)';
 /** How long the clear button stays armed waiting for a confirming second click. */
 export const CLEAR_CONFIRM_MS = 2600;
 
-/** Asset library embedded in the image drawer. Cross-origin, so read-only to us. */
-export const ASSETS_URL = 'https://assets.simka.cat';
+/**
+ * Asset library shown in the image drawer.
+ *
+ * Cross-origin, so its contents can never be read or scripted from here. What
+ * bridges that is a `postMessage` contract it implements deliberately — see
+ * `assetPicker.ts` — rather than anything scraped out of the frame.
+ *
+ * Overridable so `npm run dev` can point at a local copy of the library.
+ */
+export const ASSETS_URL = import.meta.env.VITE_ASSETS_URL ?? 'https://assets.simka.cat';
 
+/** Every message from the drawer is checked against this before it is believed. */
+export const ASSETS_ORIGIN = new URL(ASSETS_URL).origin;
 
 /** Widest edge a dropped image is scaled to, in world units. The other edge follows
  *  the source's aspect ratio, so tall images stay tall. */
 export const IMAGE_DROP_WIDTH = 320;
+
+/** How long a rejected drop or pick stays on screen before it fades out. */
+export const NOTICE_MS = 5000;
 
 /** Sanity bound on stored dimensions; anything larger is a corrupt or hostile row. */
 export const MAX_IMAGE_DIMENSION = 20000;

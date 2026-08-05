@@ -1,9 +1,10 @@
 # Whiteboard
 
 An infinite-canvas whiteboard: pen and eraser, six colours, three stroke sizes,
-undo/redo, pan and zoom (wheel, pinch, or keyboard). Drawings autosave to Supabase
-and are restored on load. React + TypeScript + Tailwind, built with Vite and
-deployed to Netlify.
+undo/redo, pan and zoom (wheel, pinch, or keyboard). Photos can be placed on it
+from a shared Google Drive folder — see [Images](#images). Everything autosaves to
+Supabase and is restored on load. React + TypeScript + Tailwind, built with Vite
+and deployed to Netlify.
 
 Ported from the original single-file `whiteboard.html`, which is kept for reference.
 
@@ -34,6 +35,7 @@ Requires Node `^20.19` or `>=22.12` (Vite 8).
 | `Ctrl`/`⌘` + `Shift` + `Z` | Redo          |
 | `+` / `-`                  | Zoom in / out |
 | `0`                        | Reset view    |
+| `Esc`                      | Close images  |
 
 Scroll to pan, `Ctrl`/`⌘` + scroll (or pinch) to zoom, middle-drag to pan.
 Clearing the board takes two clicks — the first arms the button for ~2.6s.
@@ -113,6 +115,51 @@ _Not saved_, or _Local only_ when no database is configured.
 - **Last write wins.** Two people drawing at once will clobber each other, because
   each saves the full document. Concurrent editing would need Realtime plus either
   per-stroke rows or CRDT-style merging.
+- **Placed images cannot be moved.** The image layer is `pointer-events-none` and
+  sits under the ink canvas, so an image can be placed and undone but not selected,
+  dragged, or resized.
+- **The board stores an address, not the picture.** If the asset library stops
+  serving a URL, every board holding it shows a broken image. Nothing is copied
+  into Supabase.
+
+## Images
+
+The toolbar's image button opens a drawer holding the
+[Triple Assets](https://github.com/trotha01/triple-assets) library, which browses a
+shared Google Drive folder. **Click a photo to place it** at the centre of the
+board; dragging one onto the board also works, and lands it under the pointer.
+Either way it joins the undo stack and is saved with everything else.
+
+The board has no Google sign-in of its own, deliberately. The library already has
+one, and a second OAuth client would mean a second consent screen and a second
+restricted-scope review for no new capability.
+
+The drawer is an iframe on another origin, so nothing here can read or script it.
+What crosses the boundary is a `postMessage` the library sends on purpose —
+`src/whiteboard/assetPicker.ts` is this side of that contract, and the origin of
+every message is checked against the library's before it is believed. Dragging
+still goes through the browser's own payload, so `src/whiteboard/images.ts`
+collects every URL a drop might be offering and the board keeps the first that
+actually decodes as an image, rather than guessing and failing quietly.
+
+A picked photo arrives as a signed, public, session-free URL from the library, not
+a Drive link. Drive's own addresses expire within hours and are tied to the
+account that fetched them, which would leave a shared board full of broken images
+for everybody else.
+
+**Pointing at a local library** for development:
+
+```bash
+VITE_ASSETS_URL=http://localhost:3000 npm run dev
+```
+
+The library must list this board's origin in its own `ALLOWED_EMBED_ORIGINS`, or
+the drawer will render but refuse to list anything.
+
+If the drawer keeps asking you to sign in, use the **open in a new window** button
+in its header. Safari, Firefox with strict tracking protection, and Chrome in
+incognito all decline to send the library its session cookie inside a frame; a
+first-party window works everywhere.
 
 ## Deploying to Netlify
 
@@ -143,18 +190,24 @@ src/
   lib/
     supabase.ts             Client (null when unconfigured) and board id
   whiteboard/
-    types.ts                Tool, Stroke, Viewport, Point
+    types.ts                Tool, Stroke, BoardImage, Viewport, Point
     constants.ts            Palette, sizes, zoom/grid limits, autosave timing
     render.ts               Pure canvas painting + coordinate transforms
     simplify.ts             Douglas-Peucker + rounding, applied on stroke commit
+    images.ts               What a drop is offering, and what may be placed
+    assetPicker.ts          The postMessage contract with the asset library
     persistence.ts          Board load/save queries and row parsing
     useBoardSync.ts         Initial load + debounced autosave
     useWhiteboard.ts        Input handling, view and history state
   components/
     Toolbar.tsx  ColorPicker.tsx  SizePicker.tsx  ClearButton.tsx
     ToolbarButton.tsx  BrushCursor.tsx  Hint.tsx  SaveIndicator.tsx  icons.tsx
+    ImageDrawer.tsx         Side panel framing the asset library
+    ImageLayer.tsx          Placed images, between the grid and the ink
+    Notice.tsx              What the board declined to do, and why
 supabase/
-  migrations/0001_boards.sql  Table, RLS policies, seed row
+  migrations/0001_boards.sql        Table, RLS policies, seed row
+  migrations/0002_board_images.sql  The images column
 ```
 
 Two stacked canvases: a dot grid underneath and an ink layer above, so the eraser

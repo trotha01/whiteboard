@@ -3,6 +3,7 @@ import { BrushCursor } from './components/BrushCursor';
 import { Hint } from './components/Hint';
 import { ImageDrawer } from './components/ImageDrawer';
 import { ImageLayer } from './components/ImageLayer';
+import { Notice } from './components/Notice';
 import { SaveIndicator } from './components/SaveIndicator';
 import { Toolbar } from './components/Toolbar';
 import { useWhiteboard } from './whiteboard/useWhiteboard';
@@ -29,6 +30,7 @@ export function App() {
       />
       <Hint hidden={board.hasDrawn} />
       <SaveIndicator status={board.saveStatus} />
+      <Notice message={board.notice} />
       <BrushCursor ref={board.brushCursorRef} />
       <ImageDrawer open={drawerOpen} onClose={closeDrawer} />
       <Toolbar {...board} drawerOpen={drawerOpen} onToggleDrawer={toggleDrawer} />

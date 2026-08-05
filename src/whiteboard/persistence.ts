@@ -1,5 +1,6 @@
 import { BOARD_ID, supabase } from '../lib/supabase';
 import { MAX_IMAGE_DIMENSION } from './constants';
+import { isPlaceableSrc } from './images';
 import type { BoardDocument, BoardImage, Point, Stroke } from './types';
 
 /** What the toolbar shows about the board's relationship to the database. */
@@ -48,23 +49,19 @@ function isFiniteSize(value: unknown): value is number {
 /**
  * Same defensive contract as `parseStroke`, with one extra job: the board is
  * world-writable, so a stored `src` is untrusted input that ends up in an
- * `<img>`. Only absolute `https:` URLs are let through — never `javascript:`,
- * and never a `blob:`/`data:` URL that would be broken for every other viewer.
+ * `<img>`. `isPlaceableSrc` is the same gate a drop has to pass, applied again
+ * here — never `javascript:`, and never a `blob:`/`data:` URL that would be
+ * broken for every other viewer. Checked on the way in *and* on the way out,
+ * because the row can be written by anybody, not only by this code.
  */
 function parseImage(value: unknown): BoardImage | null {
   if (typeof value !== 'object' || value === null) return null;
   const { id, src, x, y, width, height } = value as Record<string, unknown>;
   if (typeof id !== 'string' || !id) return null;
-  if (typeof src !== 'string') return null;
+  if (typeof src !== 'string' || !isPlaceableSrc(src)) return null;
   if (typeof x !== 'number' || !Number.isFinite(x)) return null;
   if (typeof y !== 'number' || !Number.isFinite(y)) return null;
   if (!isFiniteSize(width) || !isFiniteSize(height)) return null;
-
-  try {
-    if (new URL(src).protocol !== 'https:') return null;
-  } catch {
-    return null;
-  }
 
   return { id, src, x, y, width, height };
 }

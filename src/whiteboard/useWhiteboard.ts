@@ -10,12 +10,14 @@ import {
   MIN_BRUSH_CURSOR_PX,
   MIN_POINT_DISTANCE_PX,
   MIN_SCALE,
+  NOTICE_MS,
   PEN_CURSOR_FILL,
   PEN_SIZES,
   WHEEL_ZOOM_SENSITIVITY,
   ZOOM_STEP,
 } from './constants';
-import { imageUrlFromDataTransfer, loadImageSize } from './images';
+import { assetPickFrom } from './assetPicker';
+import { imageUrlsFromDataTransfer, loadImageSize } from './images';
 import type { SaveStatus } from './persistence';
 import { clamp, compositeFor, drawGrid, paintPath, redrawInk, screenToWorld } from './render';
 import { compactStroke } from './simplify';
@@ -128,6 +130,12 @@ export interface WhiteboardApi {
   canRedo: boolean;
   hasDrawn: boolean;
   saveStatus: SaveStatus;
+  /**
+   * Transient message about something the board declined to do. Null most of
+   * the time; a dropped image that turns out not to be one is otherwise
+   * indistinguishable from a drop that never registered.
+   */
+  notice: string | null;
   undo: () => void;
   redo: () => void;
   clear: () => void;
@@ -152,12 +160,28 @@ export function useWhiteboard(): WhiteboardApi {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [hasDrawn, setHasDrawn] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Native listeners are attached once, so they read the live values through refs
   // rather than closing over a stale render's props.
   const toolRef = useRef(tool);
   const colorRef = useRef(color);
   const sizeRef = useRef(sizeIndex);
+  const noticeTimer = useRef<number | null>(null);
+
+  /** Says something went wrong, then gets out of the way on its own. */
+  const showNotice = useCallback((message: string) => {
+    setNotice(message);
+    if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setNotice(null), NOTICE_MS);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
 
   const strokeWidth = useCallback(
     () => (toolRef.current === 'eraser' ? ERASER_SIZES : PEN_SIZES)[sizeRef.current],
@@ -348,44 +372,56 @@ export function useWhiteboard(): WhiteboardApi {
   }, [markDirty, scheduleRedraw, syncHistory]);
 
   /**
-   * Places a dropped image centred on the pointer. The source is decoded first
-   * so the image is committed at its true aspect ratio rather than appearing at
-   * a guessed shape and reflowing a moment later — and so a drag that turned out
-   * not to be an image at all is rejected before it reaches the board.
+   * Places an image centred on a point, taking the first candidate that turns
+   * out to be one.
+   *
+   * A list rather than a single URL because a drop is ambiguous: the same drag
+   * can offer a page link, a thumbnail, and the real image, in an order that
+   * varies by browser and by what the source site put in `dataTransfer`. Each
+   * is decoded before anything is committed, so the image lands at its true
+   * aspect ratio instead of reflowing once it paints — and a candidate that is
+   * not an image at all is eliminated rather than saved as a broken `src`.
+   *
+   * Resolves false when nothing worked, which is the caller's cue to say so.
    */
-  const addImage = useCallback(
-    async (src: string, clientX: number, clientY: number) => {
+  const placeImage = useCallback(
+    async (candidates: readonly string[], clientX: number, clientY: number) => {
       const engine = engineRef.current;
 
-      let natural: { width: number; height: number };
-      try {
-        natural = await loadImageSize(src);
-      } catch (error) {
-        console.warn('[whiteboard] ignored dropped image', error);
-        return;
+      for (const src of candidates) {
+        let natural: { width: number; height: number };
+        try {
+          natural = await loadImageSize(src);
+        } catch (error) {
+          console.warn('[whiteboard] not a loadable image, trying the next', error);
+          continue;
+        }
+
+        // Sized in screen pixels and converted to world units, so it lands at
+        // the same apparent size whatever the board is zoomed to.
+        const width = IMAGE_DROP_WIDTH / engine.view.scale;
+        const height = width * (natural.height / natural.width);
+        const [worldX, worldY] = screenToWorld(clientX, clientY, engine.view);
+
+        engine.images = [
+          ...engine.images,
+          {
+            id: crypto.randomUUID(),
+            src,
+            x: worldX - width / 2,
+            y: worldY - height / 2,
+            width,
+            height,
+          },
+        ];
+
+        const placed = engine.images[engine.images.length - 1];
+        if (placed) commit({ kind: 'image', image: placed });
+        markDirty();
+        return true;
       }
 
-      // Sized in screen pixels and converted to world units, so a drop lands at
-      // the same apparent size whatever the board is zoomed to.
-      const width = IMAGE_DROP_WIDTH / engine.view.scale;
-      const height = width * (natural.height / natural.width);
-      const [worldX, worldY] = screenToWorld(clientX, clientY, engine.view);
-
-      engine.images = [
-        ...engine.images,
-        {
-          id: crypto.randomUUID(),
-          src,
-          x: worldX - width / 2,
-          y: worldY - height / 2,
-          width,
-          height,
-        },
-      ];
-
-      const placed = engine.images[engine.images.length - 1];
-      if (placed) commit({ kind: 'image', image: placed });
-      markDirty();
+      return false;
     },
     [commit, markDirty],
   );
@@ -652,11 +688,42 @@ export function useWhiteboard(): WhiteboardApi {
     const onDrop = (e: DragEvent) => {
       if (overChrome(e.target) || !e.dataTransfer) return;
       e.preventDefault();
-      const src = imageUrlFromDataTransfer(e.dataTransfer);
-      // Not an image drag — text, a file from the desktop, a plain link. Leaving
-      // it alone is better than putting something broken on a shared board.
-      if (!src) return;
-      void addImage(src, e.clientX, e.clientY);
+
+      const candidates = imageUrlsFromDataTransfer(e.dataTransfer);
+      // Not an image drag at all — text, a file from the desktop, a plain link.
+      // Still worth saying: from the outside this looks the same as a drop the
+      // board never noticed, which is what made the drawer so hard to diagnose.
+      if (candidates.length === 0) {
+        showNotice(
+          e.dataTransfer.files.length > 0
+            ? 'Files from your computer cannot be dropped here yet.'
+            : "That drag did not carry an image the board can use.",
+        );
+        return;
+      }
+
+      const { clientX, clientY } = e;
+      void placeImage(candidates, clientX, clientY).then((placed) => {
+        if (!placed) showNotice('That image could not be loaded.');
+      });
+    };
+
+    /**
+     * A photo picked in the asset drawer.
+     *
+     * The drawer is cross-origin, so this is the whole of the channel: it sends,
+     * the board listens, and `assetPickFrom` refuses anything that did not come
+     * from the library's own origin. Placed at the centre of the viewport, since
+     * a click carries no drop point.
+     */
+    const onMessage = (e: MessageEvent) => {
+      const pick = assetPickFrom(e);
+      if (!pick) return;
+      void placeImage([pick.src], engine.width / 2, engine.height / 2).then(
+        (placed) => {
+          if (!placed) showNotice(`Could not load ${pick.name || 'that image'}.`);
+        },
+      );
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -713,6 +780,7 @@ export function useWhiteboard(): WhiteboardApi {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('dragover', onDragOver);
     window.addEventListener('drop', onDrop);
+    window.addEventListener('message', onMessage);
     inkCanvas.addEventListener('pointerdown', onPointerDown);
     inkCanvas.addEventListener('contextmenu', onContextMenu);
 
@@ -736,21 +804,23 @@ export function useWhiteboard(): WhiteboardApi {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('dragover', onDragOver);
       window.removeEventListener('drop', onDrop);
+      window.removeEventListener('message', onMessage);
       inkCanvas.removeEventListener('pointerdown', onPointerDown);
       inkCanvas.removeEventListener('contextmenu', onContextMenu);
       document.body.style.cursor = '';
     };
   }, [
-    addImage,
     commit,
     hideBrushCursor,
     markDirty,
+    placeImage,
     redo,
     resetView,
     resize,
     scheduleRedraw,
     setTool,
     showBrushCursor,
+    showNotice,
     strokeWidth,
     syncHistory,
     undo,
@@ -778,6 +848,7 @@ export function useWhiteboard(): WhiteboardApi {
     canRedo,
     hasDrawn,
     saveStatus,
+    notice,
     undo,
     redo,
     clear,
